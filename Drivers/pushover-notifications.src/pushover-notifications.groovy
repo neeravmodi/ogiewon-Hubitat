@@ -39,13 +39,26 @@
 *
 *
 */
+
+import java.text.SimpleDateFormat
+
 def version() {return "v1.0.20250317"}
 
 metadata {
-    definition (name: "Pushover", namespace: "ogiewon", author: "Dan Ogorchock", importUrl: "https://raw.githubusercontent.com/ogiewon/Hubitat/master/Drivers/pushover-notifications.src/pushover-notifications.groovy", singleThreaded:true) {
+    definition (name: "Pushover Enhanced Test", namespace: "ogiewon", author: "Dan Ogorchock", importUrl: "https://raw.githubusercontent.com/ogiewon/Hubitat/master/Drivers/pushover-notifications.src/pushover-notifications.groovy", singleThreaded:true) {
         capability "Notification"
         capability "Actuator"
         capability "Speech Synthesis"
+
+		command "getMsgLimits", [
+            [name: "Get Messaging Limits", description: "Update the message limits information"]
+        ]
+        
+        attribute "messageLimit","Number"
+        attribute "messagesRemaining","Number"
+        attribute "limitReset","Number"
+        attribute "limitResetDate","String"       
+       
     }
 
     preferences {
@@ -61,11 +74,15 @@ metadata {
                 input name: "sound", type: "enum", title: "Notification Sound (Blank = App Default):", description: "", options: soundOptions
                 input name: "url", type: "text", title: "Supplementary URL:", description: ""
                 input name: "urlTitle", type: "text", title: "URL Title:", description: ""
-                input name: "retry", type: "number", title: "Retry Interval in seconds:(30 minimum)", description: "Applies to Emergency Requests Only"
-                input name: "expire", type: "number", title: "Auto Expire After in seconds:(10800 max)", description: "Applies to Emergency Requests Only"
+                input name: "ttl", type: "number", title: "Message Auto Delete After, in seconds", description: "Number of seconds message will live, before being deleted automatically.  Applies ONLY to Non-Emergency messages."
+                input name: "retry", type: "number", title: "Emergency Retry Interval in seconds:(30 minimum)", description: "Applies to Emergency Requests Only"
+                input name: "expire", type: "number", title: "Emergency Auto Expire After in seconds:(10800 max)", description: "Applies to Emergency Requests Only"
             }
     	}
+		input name: "htmlOpen", type: "text", title: "HTML tag < character: ", description: "HE cleanses < and > characters from text input boxes.  Use this character or sequence as a substitute. (default: ≤) Ensure this is different from what is defined as >", defaultValue: "≤"
+		input name: "htmlClose", type: "text", title: "HTML tag > character: ", description: "HE cleanses < and > characters from text input boxes.  Use this character or sequence as a substitute. (default: ≥) Ensure this is different from what is defined as <", defaultValue: "≥"
 		input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: true
+		input name: "testingEnable", type: "bool", title: "Testing mode?  Sends messages with HTML markup as plain text.", defaultValue: false
 
 	}
 }
@@ -88,6 +105,10 @@ def updated() {
     } else {
         unschedule(logsoff)
     }
+
+    if (testingEnable) {
+        log.info "Testing mode enabled.  Messages will be sent as plain text instead of HTML."
+    }
 }
 
 def initialize() {
@@ -102,6 +123,15 @@ def initialize() {
     atomicState.lastSoundOptionsFetch = 0
     atomicState.cachedDeviceOptions = null
     atomicState.cachedSoundOptions = null
+    
+    //  Needs more input cleansing. 
+    if (htmlOpen == null || htmlClose == null 
+        || htmlOpen == '' || htmlClose == '' 
+        || htmlOpen =~ /[\s\[\]\\]/ || htmlClose =~ /[\s\[\]\\]/ 
+    ) {
+    	htmlOpen = "≤"
+    	htmlClose = "≥"
+    }
 }
 
 private boolean keyFormatIsValid() {
@@ -265,6 +295,12 @@ def speak(message, volume = null, voice = null) {
 }
 
 def deviceNotification(message) {
+
+    if (logEnable){
+        log.debug "Pushover driver raw message: " + message
+    }
+
+    // Message priority
     if(message.startsWith("[S]")){
         customPriority = "-2"
         message = message.minus("[S]")
@@ -285,9 +321,15 @@ def deviceNotification(message) {
         customPriority = "2"
         message = message.minus("[E]")
     }
-    if(customPriority){ priority = customPriority}
+    if(customPriority){ 
+    	priority = customPriority
+    	if (logEnable) log.debug "Pushover processed priority (${priority}): " + message
+    }
 
     def html = "0"
+    // Uncomment both of the following lines to override Preferences
+    //def htmlOpen = "«"
+    //def htmlClose = "»"
     if(message.contains("[HTML]")){
         html = "1"
         message = message.minus("[HTML]")
@@ -297,81 +339,72 @@ def deviceNotification(message) {
         if(message.contains("[CLOSE]")){
             message = message.replace("[CLOSE]",">")
         }
+        if(message.contains("${htmlOpen}")){
+            message = message.replace(htmlOpen,"<")
+        }
+        if(message.contains("${htmlClose}")){
+            message = message.replace(htmlClose,">")
+        }
+        if (logEnable) log.debug "Pushover processed HTML: " + message
     }
 
-    if((matcher = message =~ /\^(.*?)\^/)){
-        message = message.minus("^${matcher[0][1]}^")
+    // Title
+    if(( matcher = message =~ /((\^|\[TITLE=)(.*?)(\^|\]))/ )){
+        message = message.minus("${matcher[0][1]}")
         message = message.trim() //trim any whitespace
-        customTitle = matcher[0][1]
+    	customTitle = matcher[0][3]
     }
     if(customTitle){ title = customTitle}
+	if (logEnable && title != null) log.debug "Pushover processed title (${title}): " + message
 
-    if((matcher = message =~ /\#(.*?)\#/)){
-        message = message.minus("#${matcher[0][1]}#")
+    // Sound
+    if((matcher = message =~ /((\#|\[SOUND=)(.*?)(\#|\]))/ )){
+        message = message.minus("${matcher[0][1]}")
         message = message.trim() //trim any whitespace
-        customSound = matcher[0][1]
+        customSound = matcher[0][3]
         customSound = customSound.toLowerCase()
     }
     if(customSound){ sound = customSound}
+	if (logEnable && sound != null) log.debug "Pushover processed sound (${sound}): " + message
 
-    if((matcher = message =~ /\*(.*?)\*/)){
-        message = message.minus("*${matcher[0][1]}*")
+    // Device
+    if((matcher = message =~ /((\*|\[DEVICE=)(.*?)(\*|\]))/ )){
+        message = message.minus("${matcher[0][1]}")
         message = message.trim() //trim any whitespace
-        customDevice = matcher[0][1]
+        customDevice = matcher[0][3]
         customDevice = customDevice.toLowerCase()
     }
     if(customDevice){ deviceName = customDevice}
+    if (logEnable && device != null) log.debug "Pushover processed device (${device}): " + message
 
-    if((matcher = message =~ /\§(.*?)\§/)){
-        message = message.minus("§${matcher[0][1]}§")
+    // URL
+    if((matcher = message =~ /((\§|\[URL=)(.*?)(\§|\]))/ )){
+        message = message.minus("${matcher[0][1]}")
         message = message.trim() //trim any whitespace
-        customUrl = matcher[0][1]
+        customUrl = matcher[0][3]
     }
     if(customUrl){ url = customUrl}
+    if (logEnable && url != null) log.debug "Pushover processed URL (${url}): " + message
 
-    if((matcher = message =~ /\¤(.*?)\¤/)){
-        message = message.minus("¤${matcher[0][1]}¤")
+    // URL title
+    if((matcher = message =~ /((\¤|\[URLTITLE=)(.*?)(\¤|\]))/ )){
+        message = message.minus("${matcher[0][1]}")
         message = message.trim() //trim any whitespace
-        customUrlTitle = matcher[0][1]
+        customUrlTitle = matcher[0][3]
     }
     if(customUrlTitle){ urlTitle = customUrlTitle}
+    if (logEnable && urlTitle != null) log.debug "Pushover processed URL Title (${urlTitle}): " + message
 
-    if((matcher = message =~ /\¨(.*?)\¨/)){
-        message = message.minus("¨${matcher[0][1]}¨")
+    // Image
+    if((matcher = message =~ /((\¨|\[IMAGE=)(.*?)(\¨|\]))/ )){
+        message = message.minus("${matcher[0][1]}")
         message = message.trim() //trim any whitespace
-        customImageUrl = matcher[0][1]
-    }
-
-    // New Retry and Expire Code
-    if((matcher = message =~ /\©(.*?)\©/)){
-        message = message.minus("©${matcher[0][1]}©")
-        message = message.trim()
-        customRetry = matcher[0][1]
-    }
-    if(customRetry){
-        retry = customRetry
-        if (retry.toInteger() < 30){ retry = 30 }
-    }
-
-    if((matcher = message =~ /\™(.*?)\™/)){
-        message = message.minus("™${matcher[0][1]}™")
-        message = message.trim()
-        customExpire = matcher[0][1]
-    }
-    if(customExpire){
-        expire = customExpire
-        if (expire.toInteger() < 30){ expire = 30 }
-        if (expire.toInteger() > 10800){ expire = 10800 }
-    }
-
-    // End new code
-
-    if (message.indexOf("\\n") > -1) {
-        message = message.replace("\\n", "<br>")
-        html = "1"
+        customImageUrl = matcher[0][3]
     }
     if(customImageUrl){ imageUrl = customImageUrl }
+    if (logEnable && imageUrl != null) log.debug "Pushover processed image (${imageUrl}): " + message
 
+    // Retrieve image
     if (imageUrl) {
         log.debug "Getting Notification Image"
         httpGet("${imageUrl}")  //modify as needed for authentication header
@@ -379,6 +412,62 @@ def deviceNotification(message) {
             imageData = response.data
             log.debug "Notification Image Received (${imageData.available()})"
         }
+    }
+
+    // New Retry and Expire Code
+    if (priority == 2) {
+        // Emergency retry interval
+        if((matcher = message =~ /((\©|\[EM.RETRY=)(.*?)(\©|\]))/ )){
+            message = message.minus("${matcher[0][1]}")
+            message = message.trim()
+            customRetry = matcher[0][3]
+        }
+        if(customRetry){
+            retry = customRetry
+            if (retry.toInteger() < 30){ retry = 30 }
+            if (logEnable) log.debug "Pushover processed emergency return (${retry}): " + message
+        }
+
+        // Emergency message expiration
+        if((matcher = message =~ /((\™|\[EM.EXPIRE=)(.*?)(\™|\]))/ )){
+            message = message.minus("${matcher[0][1]}")
+            message = message.trim()
+            customExpire = matcher[0][3]
+        }
+        if(customExpire){
+            expire = customExpire
+            if (expire.toInteger() < 30){ expire = 30 }
+            if (expire.toInteger() > 10800){ expire = 10800 }
+            if (logEnable) log.debug "Pushover processed emergency expire (${expire}): " + message
+        }
+	
+    }
+    // End new code
+
+    // TTL Time to Live
+    if (priority != 2) {
+        if((matcher = message =~ /(\[SELFDESTRUCT=(\d+)\])/ )){
+            message = message.minus("${matcher[0][1]}")
+            message = message.trim()
+            customTtl = matcher[0][2]
+        }
+        if(customTtl){
+            ttl = customTtl
+            if (ttl.toInteger() < 0){ ttl = 0 }
+            if (logEnable) log.debug "Pushover processed TTL (${ttl}): " + message
+        }
+    }
+
+    // Newline -> HTML line break
+    if (message.indexOf("\\n") > -1) {
+        message = message.replace("\\n", "<br>")
+        html = "1"
+        if (logEnable) log.debug "Pushover processed newlines: " + message
+    }
+
+    // Send message as plain text instead of HTML
+    if (testingEnable) { html = "0" 
+        if (logEnable) log.debug "Testing mode is ON.  Message and any HTML tags will be sent in plain text."
     }
 
     //Top Part of the POST request Body
@@ -407,6 +496,9 @@ def deviceNotification(message) {
     if (expire) {
         postBodyTop = postBodyTop + """Content-Disposition: form-data; name="expire"\r\n\r\n${expire}\r\n----d29vZHNieQ==\r\n"""
     }
+    if (ttl) {
+        postBodyTop = postBodyTop + """Content-Disposition: form-data; name="ttl"\r\n\r\n${ttl}\r\n----d29vZHNieQ==\r\n"""
+    }
     if (html) {
         postBodyTop = postBodyTop + """Content-Disposition: form-data; name="html"\r\n\r\n${html}\r\n----d29vZHNieQ==\r\n"""
     }
@@ -420,6 +512,12 @@ def deviceNotification(message) {
 
     //Bottom Part of the POST request Body
     def postBodyBottom = """\r\n----d29vZHNieQ==--"""
+
+    if (logEnable) {
+        //log.debug "Pushover message top: " + message
+        log.debug "Pushover final message: " + message
+        //log.debug "Pushover message bottom: " + message
+    }			
 
     byte[] postBodyTopArr = postBodyTop.getBytes("UTF-8")
     byte[] postBodyBottomArr = postBodyBottom.getBytes("UTF-8")
@@ -463,5 +561,29 @@ def deviceNotification(message) {
     else {
         log.error "API key '${apiKey}' or User key '${userKey}' is not properly formatted!"
 		return
+    }
+}
+
+def getMsgLimits() {
+    //if (logEnable) 
+    log.debug "Sending GET request: https://api.pushover.net/1/apps/limits.json?token=...${state.lastApiKey.substring(25,30)}"
+   
+	uri = "https://api.pushover.net/1/apps/limits.json?token=${state.lastApiKey}"
+	
+    try {
+        httpGet(uri) { response ->
+            if (response.status) {
+            	if (logEnable) log.debug "${response.data}"
+            	sendEvent(name:"messageLimit", value: "${response.data.limit}")
+            	sendEvent(name:"messagesRemaining", value: "${response.data.remaining}")
+            	sendEvent(name:"limitReset", value: "${response.data.reset}")
+            	SimpleDateFormat sdf = new SimpleDateFormat("EEE, dd MMM YYYY, HH:mm")
+                epoch = (long) response.data.reset*1000
+                rDate = new Date(epoch)
+                sendEvent(name:"limitResetDate", value: sdf.format(rDate))
+             }
+        }
+    } catch (Exception e) {
+        log.warn "Call to on failed: ${e.message}"
     }
 }
