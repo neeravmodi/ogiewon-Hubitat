@@ -57,8 +57,9 @@ metadata {
         attribute "messageLimit","Number"
         attribute "messagesRemaining","Number"
         attribute "limitReset","Number"
-        attribute "limitResetDate","String"       
-       
+        attribute "limitResetDate","String"  
+        attribute "limitLastUpdated","String"  
+             
     }
 
     preferences {
@@ -75,8 +76,8 @@ metadata {
                 input name: "url", type: "text", title: "Supplementary URL:", description: ""
                 input name: "urlTitle", type: "text", title: "URL Title:", description: ""
                 input name: "ttl", type: "number", title: "Message Auto Delete After, in seconds", description: "Number of seconds message will live, before being deleted automatically.  Applies ONLY to Non-Emergency messages."
-                input name: "retry", type: "number", title: "Emergency Retry Interval in seconds:(30 minimum)", description: "Applies to Emergency Requests Only"
-                input name: "expire", type: "number", title: "Emergency Auto Expire After in seconds:(10800 max)", description: "Applies to Emergency Requests Only"
+                input name: "retry", type: "number", title: "Emergency Retry Interval in seconds:(minimum: 30)", description: "Applies to Emergency Requests Only"
+                input name: "expire", type: "number", title: "Emergency Auto Expire After in seconds:(maximum: 10800)", description: "Applies to Emergency Requests Only"
             }
     	}
 		input name: "htmlOpen", type: "text", title: "HTML tag < character: ", description: "HE cleanses < and > characters from text input boxes.  Use this character or sequence as a substitute. (default: ≤) Ensure this is different from what is defined as >", defaultValue: "≤"
@@ -363,6 +364,10 @@ def deviceNotification(message) {
         message = message.trim() //trim any whitespace
         customSound = matcher[0][3]
         customSound = customSound.toLowerCase()
+        if (! soundOptions.containsKey(customSound)) {
+            log.warn "Requested sound is not found.  Default sound will play."
+            customSound = ""
+        }
     }
     if(customSound){ sound = customSound}
 	if (logEnable && sound != null) log.debug "Pushover processed sound (${sound}): " + message
@@ -565,8 +570,7 @@ def deviceNotification(message) {
 }
 
 def getMsgLimits() {
-    //if (logEnable) 
-    log.debug "Sending GET request: https://api.pushover.net/1/apps/limits.json?token=...${state.lastApiKey.substring(25,30)}"
+    if (logEnable) log.debug "Sending GET request: https://api.pushover.net/1/apps/limits.json?token=...${state.lastApiKey.substring(25,30)}"
    
 	uri = "https://api.pushover.net/1/apps/limits.json?token=${state.lastApiKey}"
 	
@@ -577,10 +581,11 @@ def getMsgLimits() {
             	sendEvent(name:"messageLimit", value: "${response.data.limit}")
             	sendEvent(name:"messagesRemaining", value: "${response.data.remaining}")
             	sendEvent(name:"limitReset", value: "${response.data.reset}")
-            	SimpleDateFormat sdf = new SimpleDateFormat("EEE, dd MMM YYYY, HH:mm")
+            	SimpleDateFormat sdf = new SimpleDateFormat("dd MMM YYYY, HH:mm a")
                 epoch = (long) response.data.reset*1000
                 rDate = new Date(epoch)
                 sendEvent(name:"limitResetDate", value: sdf.format(rDate))
+                sendEvent(name:"limitLastUpdated", value: sdf.format(now()))
              }
         }
     } catch (Exception e) {
