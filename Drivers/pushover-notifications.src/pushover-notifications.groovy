@@ -359,16 +359,20 @@ def deviceNotification(message) {
 	if (logEnable && title != null) log.debug "Pushover processed title (${title}): " + message
 
     // Sound
-    if((matcher = message =~ /((\#|\[SOUND=)(.*?)(\#|\]))/ )){
-        message = message.minus("${matcher[0][1]}")
+    // Needs to be separated into two regexes to protect against greedy matches when using
+    // a font color AND a sound, resulting in the cutting off a message
+    //if((matcher = message =~ /((\#|\[SOUND=)(.*?)(\#|\]))/ )){
+    if((matcher = message =~ /([^=][^\"](\#(.*?)\#))/ )){
+        message = message.minus("${matcher[0][2]}")
         message = message.trim() //trim any whitespace
         customSound = matcher[0][3]
         customSound = customSound.toLowerCase()
-        if (! soundOptions.containsKey(customSound)) {
-            log.warn "Requested sound is not found.  Default sound will play."
-            customSound = ""
-        }
-    }
+    } else if ((matcher = message =~ /(\[SOUND=(.*?)\])/ )) {
+        message = message.minus("${matcher[0][1]}")
+        message = message.trim() //trim any whitespace
+        customSound = matcher[0][2]
+        customSound = customSound.toLowerCase()
+    } 
     if(customSound){ sound = customSound}
 	if (logEnable && sound != null) log.debug "Pushover processed sound (${sound}): " + message
 
