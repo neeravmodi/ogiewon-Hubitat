@@ -424,7 +424,7 @@ def deviceNotification(message) {
     }
 
     // New Retry and Expire Code
-    if (priority == 2) {
+    if (priority == "2") {
         // Emergency retry interval
         if((matcher = message =~ /((\©|\[EM.RETRY=)(.*?)(\©|\]))/ )){
             message = message.minus("${matcher[0][1]}")
@@ -454,7 +454,7 @@ def deviceNotification(message) {
     // End new code
 
     // TTL Time to Live
-    if (priority != 2) {
+    if (priority != "2") {
         if((matcher = message =~ /(\[SELFDESTRUCT=(\d+)\])/ )){
             message = message.minus("${matcher[0][1]}")
             message = message.trim()
